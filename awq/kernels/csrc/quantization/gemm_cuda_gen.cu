@@ -29,13 +29,13 @@ __device__ __forceinline__ int make_divisible(int c, int divisor){
 }
 
 template <int G>
-__global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int split_k_iters, half* __restrict__ A, int* __restrict__ B, half* __restrict__ scaling_factors, int* zeros, int M, int IC, int OC, half* __restrict__ C) 
+__global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int split_k_iters, half* __restrict__ A, int* __restrict__ B, half* __restrict__ scaling_factors, int* zeros, int M, int IC, int OC, half* __restrict__ C)
 {
   static constexpr uint32_t ZERO = 0x0;
   float C_warp[64];
   __shared__ half A_shared[128 * (32 + 8)];
   __shared__ half B_shared[64 * (32 + 8)];
-  
+
   // __shared__ half scaling_factors_shared[64];
   // __shared__ half zeros_shared[64];
 
@@ -44,7 +44,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
   int blockIdx_x = 0;
   int blockIdx_y = blockIdx.x % ((M + 128 - 1) / 128 * j_factors1);
   int blockIdx_z = blockIdx.x / ((M + 128 - 1) / 128 * j_factors1);
-  
+
   half A_shared_warp[32];
   half B_shared_warp[16];
   for (int i_0_3_init = 0; i_0_3_init < 4; ++i_0_3_init) {
@@ -66,20 +66,20 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
   int ld_A_row = (blockIdx_y / j_factors1 * 128 + threadIdx.y * row_stride_warp + threadIdx.x * 8 / 32);     // threadIdx.y is warp_id
   // bool wb_C_flag = (threadIdx.x / 4) < M;
 
-  half* A_ptr = A 
+  half* A_ptr = A
                 + (((int)blockIdx_y) / j_factors1 * 128 + (((int)threadIdx.y) * row_stride_warp) + ((int)threadIdx.x) / (32 / 8)) * IC
                 + (((int)threadIdx.x) % (32 / 8)) * 8;
-  
+
   int* B_ptr = B
             + ((int)threadIdx.y) * (IC / 8) * 8
             + (((int)threadIdx.x) / (32 / 8)) * (IC / 8)
             + (((int)blockIdx_y) % j_factors1) * 64 * (IC / 8)
             + (((int)threadIdx.x) % (32 / 8)) * 1;
-  
+
 // Why * 1 in the above line?
-                        
-  half* A_shared_ptr = A_shared 
-                    + ((int)threadIdx.y) * row_stride_warp * (32 + 8) 
+
+  half* A_shared_ptr = A_shared
+                    + ((int)threadIdx.y) * row_stride_warp * (32 + 8)
                     + (((int)threadIdx.x) / (32 / 8)) * (32 + 8)
                     + (((int)threadIdx.x) % (32 / 8) ) * 8;
 
@@ -87,7 +87,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
                     + ((int)threadIdx.y) * (row_stride / 4) * (32 + 8)
                     + (((int)threadIdx.x) / (32 / 8)) * (32 + 8)
                     + (((int)threadIdx.x) % (32 / 8)) * 8;
-  
+
 
   int* zeros_ptr = zeros
                 + ((int)threadIdx.y) * zeros_w * 8
@@ -95,7 +95,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
                 + (((int)blockIdx_y) % j_factors1) * 64 * zeros_w
                 // this term is zero
                 + (((int)threadIdx.x) % (32 / 8)) / G ;
-  
+
   half* scaling_factors_ptr = scaling_factors
                             + ((int)threadIdx.y) * sf_w * 8
                             + (((int)threadIdx.x) / (32 / 8)) * sf_w
@@ -105,7 +105,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
 
 
   // Haotian: TBD, check, May 29 11:46 AM PST
-  half* C_ptr = C 
+  half* C_ptr = C
               + blockIdx_z * M * OC        // blockIdx_z -> split_k dim
               + (((int)blockIdx_y) % j_factors1) * 64
               + (((int)threadIdx.y) / 2) * 32
@@ -114,14 +114,14 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
   // preload s.f. and zeros
   int k_bound = make_divisible(IC / 32, split_k_iters); // (IC / 32 + split_k_iters - 1) / split_k_iters;
   if ((k_bound - 1) * 32 + blockIdx_z >= IC) k_bound -= 1;
-  
+
   // TODO (Haotian): load scales and zero points to smem
 
   for (int _k_0_0 = 0; _k_0_0 < k_bound; ++_k_0_0) {
     int k_0_0 = _k_0_0 * split_k_iters + blockIdx_z;
     __syncthreads();
     // TODO: Haotian: Here we assume M % cta_M = 0.
-    for (int ax0_ax1_fused_0 = 0; ax0_ax1_fused_0 < 4; ++ax0_ax1_fused_0) 
+    for (int ax0_ax1_fused_0 = 0; ax0_ax1_fused_0 < 4; ++ax0_ax1_fused_0)
     {
       if (ld_A_row + ax0_ax1_fused_0 * row_stride_A < M)
       {
@@ -145,7 +145,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
       // B: 32 x 136 (128+8) float16
       // each warp: 32 x 4
       // each thr: read 32 bit -> convert to 8xFP16 (a UINT4) -> scale and minus zero -> WB UINT4
-      // row stride in shared memory: (NWARPS * 32 * 8 / cta_N) 
+      // row stride in shared memory: (NWARPS * 32 * 8 / cta_N)
       int B_loaded_current = *(B_ptr_local + ax0_ax1_fused_0 * row_stride * (IC / 8));
       int zeros_loaded = *(zeros_ptr_local + ax0_ax1_fused_0 * row_stride * zeros_w);
       zeros_loaded >>= ((k_0_0 * 32 / G) % 8) * 4;
@@ -157,7 +157,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
         float current_single_weight_fp = (float)(B_loaded_current & 0xF);
         half dequantized_weight = __float2half(__half2float(scaling_factors_loaded) * (current_single_weight_fp - current_zeros));
         B_loaded_current = B_loaded_current >> 4;
-        B_loaded_fp16[ic_1] = dequantized_weight;  
+        B_loaded_fp16[ic_1] = dequantized_weight;
       }
       // write back
       *(uint4*)(B_shared_ptr + ax0_ax1_fused_0 * row_stride * (32 + 8)) = *reinterpret_cast<uint4*>(B_loaded_fp16);
@@ -180,7 +180,7 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
           );
         }
       }
-      
+
       for (int ax0_0_1 = 0; ax0_0_1 < 2; ++ax0_0_1) {
         {
           unsigned int addr;
@@ -197,10 +197,52 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
           );
         }
       }
-          
+
       for (int i_0_3 = 0; i_0_3 < 4; ++i_0_3) {
         for (int j_0_4 = 0; j_0_4 < 2; ++j_0_4) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+          {
+            __asm__ __volatile__(
+              "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+              "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+              :  "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[0]), "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[1]), "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[2]), "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[3])
+              : "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[0]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[1]),
+                "r"(((unsigned *)(B_shared_warp + (j_0_4 * 8)))[0]),
+                "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[0]), "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[1]), "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[2]), "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[3])
+            );
+          }
+          {
+            __asm__ __volatile__(
+              "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+              "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+              :  "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[0]), "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[1]), "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[2]), "=f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[3])
+              : "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[2]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[3]),
+                "r"(((unsigned *)(B_shared_warp + (j_0_4 * 8)))[1]),
+                "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[0]), "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[1]), "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[2]), "f"(((float *)(C_warp + ((i_0_3 * 16) + (j_0_4 * 8))))[3])
+            );
+          }
 
+          {
+            __asm__ __volatile__(
+              "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+              "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+              :  "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[0]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[1]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[2]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[3])
+              : "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[0]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[1]),
+                "r"(((unsigned *)(B_shared_warp + ((j_0_4 * 8) + 4)))[0]),
+                "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[0]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[1]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[2]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[3])
+            );
+          }
+          {
+            __asm__ __volatile__(
+              "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+              "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+              :  "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[0]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[1]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[2]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[3])
+              : "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[2]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[3]),
+                "r"(((unsigned *)(B_shared_warp + ((j_0_4 * 8) + 4)))[1]),
+                "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[0]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[1]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[2]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[3])
+            );
+          }
+#else
           {
             __asm__ __volatile__(
               "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32"
@@ -216,11 +258,12 @@ __global__ void __launch_bounds__(128) gemm_forward_4bit_cuda_m128n64k32(int spl
               :  "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[0]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[1]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[2]), "=f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[3])
               : "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[0]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[1]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[2]), "r"(((unsigned *)(A_shared_warp + (i_0_3 * 8)))[3]), "r"(((unsigned *)(B_shared_warp + ((j_0_4 * 8) + 4)))[0]), "r"(((unsigned *)(B_shared_warp + ((j_0_4 * 8) + 4)))[1]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[0]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[1]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[2]), "f"(((float *)(C_warp + (((i_0_3 * 16) + (j_0_4 * 8)) + 4)))[3]));
           }
+#endif
         }
       }
     }
   }
-    
+
 // Haotian: Here (May 29 11:46AM PST)
 // TODO: Shang: Hoist loop invariance.
   for (int ax0_0_2 = 0; ax0_0_2 < 4; ++ax0_0_2) {
@@ -275,7 +318,7 @@ torch::Tensor gemm_forward_cuda(
         throw std::invalid_argument("OC is not multiple of pack_num = 8");
     int j_factors1 = num_out_channels / 64 / 1;
     dim3 num_blocks((num_out_feats + 128 - 1) / 128 * j_factors1 * split_k_iters);
-    
+
     // threadIdx.x: 32
     // threadIdx.y: i_factors[2] * j_factors[2]
     dim3 threads_per_block(32, 4);
